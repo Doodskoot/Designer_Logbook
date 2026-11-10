@@ -591,7 +591,7 @@ async function deleteEntryData(e){
 const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
 if(!SpeechRec) document.documentElement.classList.add('no-speech');
 let rec=null, recBtn=null;
-function stopDictation(){ if(rec){ try{ rec.stop(); }catch{} } }
+function stopDictation(){ if(rec) rec.stop(); }
 let micReady=false;
 function micHelp(reason){
   const local=!/^https:$|^http:$/.test(location.protocol) || !window.isSecureContext;
@@ -616,22 +616,46 @@ async function toggleDictation(btn){
   stopDictation();
   if(!await ensureMic()) return;
   const ta=document.getElementById(btn.dataset.mic), interim=document.getElementById('int_'+btn.dataset.mic);
+  // Text already in the box stays as "base"; this listening session's words are rebuilt from scratch on every
+  // result. Android Chrome reports each growing guess as a new *final* result ("We set up", "We set up a", ...),
+  // so results are merged instead of appended: a result that starts with the text so far replaces it.
+  let base=ta.value.replace(/\s+$/,''), session='', lastLen=0, wantOn=true, emptyRuns=0, heard=false;
+  const join=(x,y)=> x && y ? x+(/[.!?:]$/.test(x)?' ':'. ')+y : (x||y);
+  const cap=t=>t?t.charAt(0).toUpperCase()+t.slice(1):'';
+  const write=()=>{ ta.value=join(base,cap(session.trim())); ta.dispatchEvent(new Event('input')); ta.scrollTop=ta.scrollHeight; };
+  const commit=()=>{ if(session.trim()){ write(); base=ta.value.replace(/\s+$/,''); } session=''; lastLen=0; };
+  const merge=results=>{
+    let acc='';
+    for(let i=0;i<results.length;i++){
+      const t=results[i][0].transcript.trim(); if(!t) continue;
+      const A=acc.toLowerCase(), B=t.toLowerCase();
+      if(!acc || B.startsWith(A)) acc=t;          // cumulative (Android) or first segment
+      else if(A.endsWith(B)) {}                    // repeat of the tail, skip
+      else acc+=' '+t;                             // genuinely new segment (desktop)
+    }
+    return acc;
+  };
   const r=new SpeechRec(); r.lang=(settings.speechLang||'en-ZA'); r.continuous=true; r.interimResults=true;
   r.onresult=ev=>{
-    let fin='', mid='';
-    for(let i=ev.resultIndex;i<ev.results.length;i++){ const t=ev.results[i][0].transcript; if(ev.results[i].isFinal) fin+=t; else mid+=t; }
-    if(fin.trim()){ fin=fin.trim(); fin=fin.charAt(0).toUpperCase()+fin.slice(1);
-      const cur=ta.value.replace(/\s+$/,''); ta.value=cur+(cur?(/[.!?:]$/.test(cur)?' ':'. '):'')+fin;
-      ta.dispatchEvent(new Event('input')); ta.scrollTop=ta.scrollHeight; }
-    if(interim) interim.textContent=mid?'… '+mid:'Listening…';
+    if(ev.results.length<lastLen) commit();      // recogniser reset its list: keep what we had
+    lastLen=ev.results.length; heard=true;
+    session=merge(ev.results); write();
+    if(interim) interim.textContent='Listening… tap the mic again to stop.';
   };
-  r.onstart=()=>{ btn.classList.add('on'); if(interim) interim.textContent='Listening… tap the mic again to stop.'; };
-  r.onerror=ev=>{ if(ev.error==='not-allowed'||ev.error==='service-not-allowed'){ micReady=false; micHelp(ev.error); return; }
-    const m={
-      'network':'Voice typing needs an internet connection in this browser.','no-speech':'No speech heard.','audio-capture':'No microphone found.'}[ev.error];
-    if(m) toast(m); };
-  r.onend=()=>{ btn.classList.remove('on'); if(interim) interim.textContent=''; if(rec===r){ rec=null; recBtn=null; } };
-  rec=r; recBtn=btn;
+  r.onstart=()=>{ btn.classList.add('on'); heard=false; if(interim) interim.textContent='Listening… tap the mic again to stop.'; };
+  r.onerror=ev=>{ if(ev.error==='not-allowed'||ev.error==='service-not-allowed'){ wantOn=false; micReady=false; micHelp(ev.error); return; }
+    if(ev.error==='aborted' || ev.error==='no-speech') return;
+    const m={'network':'Voice typing needs an internet connection in this browser.','audio-capture':'No microphone found.'}[ev.error];
+    wantOn=false; if(m) toast(m); };
+  r.onend=()=>{
+    commit();
+    emptyRuns = heard ? 0 : emptyRuns+1;
+    // Phones end the session after a pause; carry on listening until the person taps stop.
+    if(wantOn && emptyRuns<3 && !document.hidden){ try{ r.start(); return; }catch{} }
+    btn.classList.remove('on'); if(interim) interim.textContent=''; if(rec===ctl){ rec=null; recBtn=null; }
+  };
+  const ctl={ stop(){ wantOn=false; try{ r.stop(); }catch{} } };
+  rec=ctl; recBtn=btn;
   try{ r.start(); }catch(err){ toast('Could not start voice typing: '+err.message); rec=null; recBtn=null; }
 }
 window.addEventListener('hashchange', stopDictation);
