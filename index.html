@@ -114,6 +114,9 @@ button.chip.on{background:var(--chip);color:var(--chip-ink);border-color:var(--f
 .subitem input:focus,.subitem textarea:focus{outline:2px solid var(--focus);border-color:var(--blue)}
 .linkrow{display:flex;gap:8px;align-items:center}
 .linkrow a[hidden]{display:none}
+.cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px 16px;font-size:14px}
+.cgrid .lbl{display:block;margin-bottom:2px}
+.subline{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:4px;font-size:13px;color:var(--ink)}
 .no-speech .mic{display:none}
 .no-speech .ta textarea{padding-right:10px!important}
 .f input:focus,.f select:focus,.f textarea:focus,input.search:focus{outline:2px solid var(--focus);outline-offset:0;border-color:var(--blue)}
@@ -126,6 +129,7 @@ button.chip.on{background:var(--chip);color:var(--chip-ink);border-color:var(--f
 .att{display:flex;flex-wrap:wrap;gap:8px}
 .thumb{width:104px;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--soft);position:relative;cursor:pointer}
 .thumb .img{height:78px;display:grid;place-items:center;background:var(--thumb) center/cover no-repeat;font:700 13px var(--mono);color:var(--muted)}
+.thumb.missing .img{color:var(--bad);font-size:11px}
 .thumb .nm{font-size:11px;padding:4px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .thumb .x{position:absolute;top:3px;right:3px;width:24px;height:24px;border-radius:50%;border:0;background:rgba(28,39,51,.8);color:#fff;cursor:pointer;line-height:24px;padding:0;font-size:14px}
 .att-actions{display:flex;gap:8px;flex-wrap:wrap}
@@ -166,6 +170,8 @@ button.chip.on{background:var(--chip);color:var(--chip-ink);border-color:var(--f
   #print h1{font-size:18pt;margin:0 0 4pt}
   #print .pe{border-top:2px solid #000;padding-top:8pt;margin-top:14pt;page-break-inside:avoid}
   #print h2{font-size:13pt;margin:0 0 4pt}
+  #print .pm{margin-top:20pt;padding:6pt 8pt;background:#eee;border-left:4pt solid #000;page-break-after:avoid}
+  #print .pm h2{font-size:15pt}
   #print .pk{font:8pt var(--mono);text-transform:uppercase;color:#555;margin-top:6pt}
   #print img{max-width:45%;max-height:160pt;margin:4pt 4pt 0 0;border:1px solid #ccc}
   #print p{margin:2pt 0;white-space:pre-wrap}
@@ -185,12 +191,13 @@ button.chip.on{background:var(--chip);color:var(--chip-ink);border-color:var(--f
 
 <script>
 /* =====================================================================
-   Designer Logbook  ·  single-file app  ·  data schema v1
-   Storage: IndexedDB in this browser (designers, entries, files, meta).
+   Designer Logbook  ·  single-file app  ·  data schema v3
+   Storage: IndexedDB in this browser (designers, machines, entries, files, meta).
+   Tree: customer -> designer -> machine (project no, description, facility, cost centre) -> topic entries.
    Every record carries id / createdAt / updatedAt / createdBy so a later
    server version can sync records and attribute them to users.
    ===================================================================== */
-const APP_ID = 'designer-logbook', SCHEMA = 1;
+const APP_ID = 'designer-logbook', SCHEMA = 3;
 
 const SKILL_LEVELS = ['', '1 · Aware', '2 · Needs guidance', '3 · Independent', '4 · Proficient', '5 · Can teach others'];
 const FORMATS = ['In person', 'On site / at machine', 'Teams / video call', 'Phone', 'Design review', 'Email / async'];
@@ -209,10 +216,10 @@ const DB = {
   db: null,
   open() {
     return new Promise((res, rej) => {
-      const r = indexedDB.open(APP_ID, 1);
+      const r = indexedDB.open(APP_ID, 3);
       r.onupgradeneeded = () => {
         const d = r.result;
-        ['designers','entries','files'].forEach(s => d.objectStoreNames.contains(s) || d.createObjectStore(s, {keyPath:'id'}));
+        ['customers','designers','machines','entries','files'].forEach(s => d.objectStoreNames.contains(s) || d.createObjectStore(s, {keyPath:'id'}));
         d.objectStoreNames.contains('meta') || d.createObjectStore('meta', {keyPath:'key'});
       };
       r.onsuccess = () => { this.db = r.result; res(); };
@@ -236,8 +243,8 @@ const DB = {
 };
 
 /* ---------------- state ---------------- */
-let designers = [], entries = [], settings = {consultant:'', principles:[]};
-const view = {name:'designers', designerId:null, entryId:null, q:''};
+let customers = [], designers = [], machines = [], entries = [], settings = {consultant:'', principles:[]};
+const view = {name:'customers', customerId:null, designerId:null, machineId:null, entryId:null, q:''};
 const fileCache = new Map();
 
 const $ = (s, el=document) => el.querySelector(s);
@@ -252,13 +259,45 @@ const fmtDur = m => { m=+m||0; if(!m) return '—'; const h=Math.floor(m/60), mm
 const fmtHours = m => ((+m||0)/60).toFixed(1);
 const fmtDate = d => { if(!d) return '—'; const x=new Date(d+'T00:00'); return isNaN(x)?d:x.toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'}); };
 const fmtSize = b => b>1048576 ? (b/1048576).toFixed(1)+' MB' : Math.max(1,Math.round(b/1024))+' KB';
+const byDate = (a,b)=>(b.date||'').localeCompare(a.date||'') || (b.createdAt||'').localeCompare(a.createdAt||'');
+const machineEntries = id => entries.filter(e=>e.machineId===id).sort(byDate);
+const designerMachines = id => machines.filter(m=>m.designerId===id).sort((a,b)=>{
+  const la=(machineEntries(a.id)[0]||{}).date||'', lb=(machineEntries(b.id)[0]||{}).date||'';
+  return lb.localeCompare(la) || (a.name||'').localeCompare(b.name||''); });
+const machineLine = m => m ? [m.projectNumber&&'Project '+m.projectNumber, m.costCentre&&'CC '+m.costCentre].filter(Boolean).join(' · ') : '';
+const sumMins = es => es.reduce((s,e)=>s+(+e.durationMin||0),0);
+const customerDesigners = id => designers.filter(d=>d.customerId===id).sort((a,b)=>a.name.localeCompare(b.name));
 const designerEntries = id => entries.filter(e=>e.designerId===id).sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.createdAt||'').localeCompare(a.createdAt||''));
 
 function stamp(o, isNew){ const t=now(); if(isNew){o.id=o.id||uid(); o.createdAt=t; o.createdBy=settings.consultant||'consultant';} o.updatedAt=t; o.updatedBy=settings.consultant||'consultant'; return o; }
 async function markChanged(){ await DB.setMeta('lastChange', now()); }
 
+/* v2 -> v3: designers now sit under a customer. Older designers go to one starter customer to rename. */
+async function migrateToCustomers(){
+  const orphans=designers.filter(d=>!d.customerId || !byId(customers,d.customerId)); if(!orphans.length) return 0;
+  let c=customers.find(x=>x.starter) || customers[0];
+  if(!c){ c=stamp({name:'My first customer', starter:true, site:'', contact:'', position:'', phone:'', email:'', startDate:'', reference:'', notes:''}, true);
+    customers.push(c); await DB.put('customers',c); }
+  for(const d of orphans){ d.customerId=c.id; await DB.put('designers',d); }
+  return orphans.length;
+}
+
+/* v1 -> v2: entries used to hold facility / cost centre themselves. Group them per designer into machines. */
+async function migrateToMachines(){
+  let n=0;
+  for(const e of entries){
+    if(e.machineId && byId(machines,e.machineId)) continue;
+    const name=(e.facilityName||'').trim(), cc=(e.costCentre||'').trim();
+    let m=machines.find(x=>x.designerId===e.designerId && (x.name||'')===(name||'General / unassigned') && (x.costCentre||'')===cc);
+    if(!m){ m=stamp({designerId:e.designerId, name:name||'General / unassigned', projectNumber:'', projectDescription:(e.facilityDesc||'').trim(), costCentre:cc}, true);
+      machines.push(m); await DB.put('machines',m); }
+    e.machineId=m.id; await DB.put('entries',e); n++;
+  }
+  return n;
+}
+
 /* ---------------- UI primitives ---------------- */
-function toast(msg){ const t=document.createElement('div'); t.className='toast'; t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(),2200); }
+function toast(msg){ $$('.toast').forEach(x=>x.remove()); const t=document.createElement('div'); t.className='toast'; t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(),2200); }
 
 function modal({title, body='', buttons=[{label:'OK', value:true, cls:'pri'}], onOpen}){
   return new Promise(resolve => {
@@ -282,21 +321,31 @@ function go(h){ flushSave(); if(location.hash!==h) location.hash=h; else route()
 window.addEventListener('hashchange', ()=>{ flushSave(); route(); });
 function route(){
   const p=location.hash.replace(/^#\/?/,'').split('/');
-  let e;
-  if(p[0]==='d' && byId(designers,p[1])) Object.assign(view,{name:'topics', designerId:p[1]});
-  else if(p[0]==='e' && (e=byId(entries,p[1]))) Object.assign(view,{name:'entry', entryId:e.id, designerId:e.designerId});
+  let c, d, m, e;
+  const setD = d => ({designerId:d.id, customerId:d.customerId});
+  if(p[0]==='c' && (c=byId(customers,p[1]))) Object.assign(view,{name:'designers', customerId:c.id});
+  else if(p[0]==='d' && (d=byId(designers,p[1]))) Object.assign(view,{name:'machines'},setD(d));
+  else if(p[0]==='m' && (m=byId(machines,p[1])) && (d=byId(designers,m.designerId))) Object.assign(view,{name:'topics', machineId:m.id},setD(d));
+  else if(p[0]==='e' && (e=byId(entries,p[1])) && (d=byId(designers,e.designerId))) Object.assign(view,{name:'entry', entryId:e.id, machineId:e.machineId},setD(d));
   else if(p[0]==='backup') view.name='backup';
-  else view.name='designers';
+  else if(p[0]==='settings') view.name='settings';
+  else view.name='customers';
   render(); window.scrollTo(0,0);
 }
 
 function renderTabs(){
-  const d=byId(designers,view.designerId), e=byId(entries,view.entryId);
+  const c=byId(customers,view.customerId);
+  const d0=byId(designers,view.designerId); const d = d0 && c && d0.customerId===c.id ? d0 : null;
+  const m=byId(machines,view.machineId); const mm = m && d && m.designerId===d.id ? m : null;
+  const e=byId(entries,view.entryId); const ee = e && mm && e.machineId===mm.id ? e : null;
   const tabs=[
-    ['designers','1','Designer','#/'],
-    ['topics','2', d? d.name : 'Topics', d?'#/d/'+d.id:null],
-    ['entry','3', e? (e.topicTitle||'Untitled topic') : 'Entry', e?'#/e/'+e.id:null],
-    ['backup','⇅','Save / Backup','#/backup']
+    ['customers','1','Customer','#/'],
+    ['designers','2', c? c.name : 'Designers', c?'#/c/'+c.id:null],
+    ['machines','3', d? d.name : 'Machines', d?'#/d/'+d.id:null],
+    ['topics','4', mm? (mm.name||'Machine') : 'Topics', mm?'#/m/'+mm.id:null],
+    ['entry','5', ee? (ee.topicTitle||'Untitled topic') : 'Entry', ee?'#/e/'+ee.id:null],
+    ['settings','⚙','Settings','#/settings'],
+    ['backup','⇅','Backup','#/backup']
   ];
   $('#tabs').innerHTML=tabs.map(([k,n,l,h])=>`<button data-h="${h||''}" class="${view.name===k?'on':''}" ${h?'':'disabled'}><span class="n">${n}</span>${esc(l)}</button>`).join('');
   $$('#tabs button').forEach(b=>b.onclick=()=>b.dataset.h&&go(b.dataset.h));
@@ -304,39 +353,106 @@ function renderTabs(){
 
 function render(){
   renderTabs();
-  ({designers:renderDesigners, topics:renderTopics, entry:renderEntry, backup:renderBackup})[view.name]();
+  ({customers:renderCustomers, designers:renderDesigners, settings:renderSettings, machines:renderMachines, topics:renderTopics, entry:renderEntry, backup:renderBackup})[view.name]();
 }
 
-/* ---------------- view 1: designers ---------------- */
-async function renderDesigners(){
-  const q=view.q.toLowerCase();
-  const list=designers.filter(d=>!q || (d.name+' '+(d.role||'')+' '+(d.discipline||'')).toLowerCase().includes(q))
-                      .sort((a,b)=>a.name.localeCompare(b.name));
+/* ---------------- view 1: customers ---------------- */
+async function renderCustomers(){
+  const q=(view.cq||'').toLowerCase();
+  const list=customers.filter(c=>!q || [c.name,c.site,c.contact].join(' ').toLowerCase().includes(q)).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
   const banner = await backupBanner();
   $('#main').innerHTML=`
     ${banner}
-    <div class="bar"><h2>Designers <span class="sub">${designers.length} on record</span></h2>
+    <div class="bar"><h2>Customers <span class="sub">${customers.length} on record</span></h2>
+      <button class="btn pri" id="addC">+ Add customer</button></div>
+    ${customers.length>3?`<div class="bar"><input class="search" id="cq" placeholder="Search customers…" value="${esc(view.cq||'')}"></div>`:''}
+    ${list.length?`<div class="grid">${list.map(c=>{
+        const ds=customerDesigners(c.id), es=ds.flatMap(d=>designerEntries(d.id)), ms=ds.flatMap(d=>designerMachines(d.id));
+        return `<div class="card" data-cid="${c.id}" tabindex="0">
+          <div class="row"><div class="avatar">${esc(initials(c.name))}</div>
+          <div style="min-width:0"><h3>${esc(c.name)}</h3><div class="sub">${esc([c.contact,c.site&&c.site.split('\n')[0]].filter(Boolean).join(' · ')||'—')}</div></div></div>
+          <div class="meta"><span><b>${ds.length}</b> designers</span><span><b>${ms.length}</b> machines</span><span><b>${es.length}</b> topics</span><span><b>${fmtHours(sumMins(es))}</b> h</span></div>
+        </div>`;}).join('')}</div>`
+      : `<div class="empty">${customers.length?'No customer matches that search.':'No customers yet. Add the company you are consulting for to start.'}</div>`}
+  `;
+  $('#addC').onclick=()=>editCustomer();
+  const qi=$('#cq'); if(qi) qi.oninput=()=>{ view.cq=qi.value; const pos=qi.selectionStart; renderCustomers().then(()=>{const n=$('#cq'); n.focus(); n.setSelectionRange(pos,pos);}); };
+  $$('.card[data-cid]').forEach(c=>{ c.onclick=()=>go('#/c/'+c.dataset.cid); c.onkeydown=e=>e.key==='Enter'&&c.click(); });
+  $$('[data-go]').forEach(b=>b.onclick=()=>go(b.dataset.go));
+}
+
+const CUST_FIELDS=[['name','Company name *','text','e.g. Acme Automotive'],['site','Site / address','area','Street, town, plant or site name'],
+  ['contact','Contact person','text',''],['position','Position','text','e.g. Engineering manager'],['phone','Phone','tel',''],['email','Email','email',''],
+  ['startDate','Engagement started','date',''],['reference','Reference / PO number','text',''],['notes','Notes / scope of the engagement','area','Goals agreed with the customer, rates, contract notes…']];
+async function editCustomer(c){
+  const isNew=!c; c=c||{};
+  const v=await modal({
+    title:isNew?'New customer sheet':'Customer sheet',
+    body:CUST_FIELDS.map(([k,l,t,ph])=>`<div class="f"><label for="c_${k}">${l}</label>${t==='area'?`<textarea id="c_${k}" placeholder="${esc(ph)}">${esc(c[k])}</textarea>`:`<input id="c_${k}" type="${t}" value="${esc(c[k])}" placeholder="${esc(ph)}" ${t==='tel'?'inputmode="tel"':''}>`}</div>`).join(''),
+    buttons:[...(isNew?[]:[{label:'Delete',value:'delete',cls:'danger'}]),{label:'Cancel',value:null},
+      {label:isNew?'Add customer':'Save', cls:'pri', validate:ov=>{ const ok=$('#c_name',ov).value.trim(); if(!ok) $('#c_name',ov).focus(); return !!ok; },
+       value:ov=>Object.fromEntries(CUST_FIELDS.map(([k])=>[k,$('#c_'+k,ov).value.trim()]))}]
+  });
+  if(!v) return;
+  if(v==='delete'){
+    const ds=customerDesigners(c.id), n=ds.reduce((s,d)=>s+designerEntries(d.id).length,0);
+    if(!await confirmBox('Delete customer',`Delete ${c.name}${ds.length?`, its ${ds.length} designer(s) and ${n} logbook entr${n===1?'y':'ies'} (including attachments)`:''}? This cannot be undone.`)) return;
+    for(const d of ds){ for(const e of designerEntries(d.id)) await deleteEntryData(e);
+      for(const m of designerMachines(d.id)) await DB.del('machines',m.id); machines=machines.filter(m=>m.designerId!==d.id);
+      await DB.del('designers',d.id); }
+    designers=designers.filter(d=>d.customerId!==c.id);
+    await DB.del('customers',c.id); customers=customers.filter(x=>x.id!==c.id); await markChanged();
+    toast('Customer deleted'); go('#/'); return;
+  }
+  Object.assign(c,v); delete c.starter; stamp(c,isNew); await DB.put('customers',c); if(isNew) customers.push(c); await markChanged();
+  if(isNew) go('#/c/'+c.id); else render();
+}
+
+/* ---------------- view 2: customer sheet + designers ---------------- */
+async function renderDesigners(){
+  const c=byId(customers,view.customerId); if(!c) return go('#/');
+  const all=customerDesigners(c.id), q=view.q.toLowerCase();
+  const list=all.filter(d=>!q || (d.name+' '+(d.role||'')+' '+(d.discipline||'')).toLowerCase().includes(q));
+  const row=(l,v)=>v?`<div><span class="lbl">${l}</span><div style="white-space:pre-wrap">${v}</div></div>`:'';
+  const link=(href,t)=>`<a href="${esc(href)}" style="color:var(--blue)">${esc(t)}</a>`;
+  $('#main').innerHTML=`
+    <div class="panel csheet">
+      <div class="bar" style="margin-bottom:8px"><div class="avatar">${esc(initials(c.name))}</div>
+        <h2 style="flex:1 1 160px">${esc(c.name)}<div class="sub">Customer sheet</div></h2>
+        <button class="btn sm" id="editC">Edit sheet</button></div>
+      <div class="cgrid">
+        ${row('Contact person',esc([c.contact,c.position].filter(Boolean).join(', ')))}
+        ${row('Phone',c.phone?link('tel:'+c.phone.replace(/[^\d+]/g,''),c.phone):'')}
+        ${row('Email',c.email?link('mailto:'+c.email,c.email):'')}
+        ${row('Site / address',esc(c.site))}
+        ${row('Engagement started',c.startDate?esc(fmtDate(c.startDate)):'')}
+        ${row('Reference / PO',esc(c.reference))}
+        ${c.notes?`<div style="grid-column:1/-1">${row('Notes / scope',esc(c.notes))}</div>`:''}
+      </div>
+      ${[c.contact,c.phone,c.email,c.site,c.reference,c.startDate].some(Boolean)?'':`<p style="margin:8px 0 0">No details yet. Tap “Edit sheet” to add the contact, site and engagement details.</p>`}
+    </div>
+    <div class="bar"><h2>Designers <span class="sub">${all.length} at ${esc(c.name)}</span></h2>
       <button class="btn pri" id="addD">+ Add designer</button></div>
-    ${designers.length>3?`<div class="bar"><input class="search" id="q" placeholder="Search designers…" value="${esc(view.q)}"></div>`:''}
+    ${all.length>3?`<div class="bar"><input class="search" id="q" placeholder="Search designers…" value="${esc(view.q)}"></div>`:''}
     ${list.length? `<div class="grid">${list.map(d=>{
-        const es=designerEntries(d.id), mins=es.reduce((s,e)=>s+(+e.durationMin||0),0), last=es[0];
+        const es=designerEntries(d.id), mins=sumMins(es), last=es[0];
         const open=es.filter(e=>e.status==='followup').length;
         return `<div class="card" data-id="${d.id}" tabindex="0">
           <div class="row"><div class="avatar">${esc(initials(d.name))}</div>
           <div style="min-width:0"><h3>${esc(d.name)}</h3><div class="sub">${esc([d.role,d.discipline].filter(Boolean).join(' · ')||'—')}</div></div></div>
-          <div class="meta"><span><b>${es.length}</b> topics</span><span><b>${fmtHours(mins)}</b> h</span>
+          <div class="meta"><span><b>${designerMachines(d.id).length}</b> machines</span><span><b>${es.length}</b> topics</span><span><b>${fmtHours(mins)}</b> h</span>
           <span>last <b>${last?esc(fmtDate(last.date)):'—'}</b></span>${open?`<span style="color:var(--warn)"><b style="color:inherit">${open}</b> follow-up</span>`:''}</div>
         </div>`;}).join('')}</div>`
-      : `<div class="empty">${designers.length?'No designer matches that search.':'No designers yet. Add the first designer to start a logbook.'}</div>`}
+      : `<div class="empty">${all.length?'No designer matches that search.':'No designers for this customer yet. Add the first designer to start a logbook.'}</div>`}
   `;
+  $('#editC').onclick=()=>editCustomer(c);
   $('#addD').onclick=()=>editDesigner();
   const qi=$('#q'); if(qi){ qi.oninput=()=>{view.q=qi.value; const pos=qi.selectionStart; renderDesigners().then(()=>{const n=$('#q'); n.focus(); n.setSelectionRange(pos,pos);});}; }
-  $$('.card[data-id]').forEach(c=>{ c.onclick=()=>go('#/d/'+c.dataset.id); c.onkeydown=e=>e.key==='Enter'&&c.click(); });
-  $$('[data-go]').forEach(b=>b.onclick=()=>go(b.dataset.go));
+  $$('.card[data-id]').forEach(el=>{ el.onclick=()=>go('#/d/'+el.dataset.id); el.onkeydown=e=>e.key==='Enter'&&el.click(); });
 }
 
 async function backupBanner(){
-  if(!designers.length) return '';
+  if(!designers.length && !customers.length) return '';
   const last=await DB.getMeta('lastBackup',null), changed=await DB.getMeta('lastChange',null);
   if(!changed || (last && last>=changed)) return '';
   const days= last ? Math.floor((Date.now()-new Date(last))/864e5) : null;
@@ -363,62 +479,119 @@ async function editDesigner(d){
     const n=designerEntries(d.id).length;
     if(!await confirmBox('Delete designer', `Delete ${d.name}${n?` and their ${n} logbook entr${n>1?'ies':'y'} (including attachments)`:''}? This cannot be undone.`)) return;
     for(const e of designerEntries(d.id)) await deleteEntryData(e);
+    for(const m of designerMachines(d.id)){ await DB.del('machines',m.id); } machines=machines.filter(m=>m.designerId!==d.id);
     await DB.del('designers',d.id); designers=designers.filter(x=>x.id!==d.id); await markChanged();
-    toast('Designer deleted'); go('#/'); return;
+    toast('Designer deleted'); go('#/c/'+d.customerId); return;
   }
-  Object.assign(d,v); stamp(d,isNew); await DB.put('designers',d); if(isNew) designers.push(d); await markChanged();
+  Object.assign(d,v); if(isNew) d.customerId=view.customerId; stamp(d,isNew); await DB.put('designers',d); if(isNew) designers.push(d); await markChanged();
   if(isNew) go('#/d/'+d.id); else render();
 }
 
-/* ---------------- view 2: topics for a designer ---------------- */
-function renderTopics(){
+/* ---------------- view 2: machines for a designer ---------------- */
+function statBlock(cells){ return `<div class="stats">${cells.map(([k,v,warn])=>`<div class="stat"><div class="k">${k}</div><div class="v" style="${warn?'color:var(--warn)':''}">${v}</div></div>`).join('')}</div>`; }
+function renderMachines(){
   const d=byId(designers,view.designerId); if(!d) return go('#/');
-  const es=designerEntries(d.id), mins=es.reduce((s,e)=>s+(+e.durationMin||0),0);
-  const fu=es.filter(e=>e.status==='followup').length;
-  const deltas=es.filter(e=>e.skillBefore&&e.skillAfter).map(e=>e.skillAfter-e.skillBefore);
-  const avgDelta=deltas.length?(deltas.reduce((a,b)=>a+b,0)/deltas.length):null;
-  const q=(view.tq||'').toLowerCase();
-  const shown=es.filter(e=>!q || [e.topicTitle,e.topicCategory,e.topicNotes,(e.principles||[]).join(' '),e.skillArea,e.facilityName,e.costCentre,...allSubs(e).map(x=>x.title+' '+x.notes)].join(' ').toLowerCase().includes(q));
+  const ms=designerMachines(d.id), es=designerEntries(d.id), fu=es.filter(e=>e.status==='followup').length;
   $('#main').innerHTML=`
     <div class="bar">
       <div class="avatar">${esc(initials(d.name))}</div>
       <h2 style="flex:1 1 160px">${esc(d.name)}<div class="sub">${esc([d.role,d.discipline].filter(Boolean).join(' · ')||'')}</div></h2>
       <button class="btn sm" id="editD">Edit</button>
       <button class="btn sm" id="printD" ${es.length?'':'disabled'}>Print / PDF</button>
-      <button class="btn pri" id="addE">+ New topic</button>
+      <button class="btn pri" id="addM">+ Add machine</button>
     </div>
-    <div class="stats">
-      <div class="stat"><div class="k">Topics</div><div class="v">${es.length}</div></div>
-      <div class="stat"><div class="k">Hours</div><div class="v">${fmtHours(mins)}</div></div>
-      <div class="stat"><div class="k">Follow-ups</div><div class="v" style="${fu?'color:var(--warn)':''}">${fu}</div></div>
-      <div class="stat"><div class="k">Avg skill gain</div><div class="v">${avgDelta===null?'—':(avgDelta>0?'+':'')+avgDelta.toFixed(1)}</div></div>
-    </div>
-    ${es.length>4?`<div class="bar"><input class="search" id="tq" placeholder="Search topics, principles, cost centre…" value="${esc(view.tq||'')}"></div>`:''}
-    ${shown.length?`<div class="list">${shown.map(e=>`
-      <div class="item st-${e.status||'open'}" data-id="${e.id}" tabindex="0">
-        <div class="d"><b>${esc(fmtDate(e.date))}</b>${esc(fmtDur(e.durationMin))}</div>
-        <div style="min-width:0"><h4>${esc(e.topicTitle||'Untitled topic')}</h4>
-          <div class="sub">${esc([e.topicCategory,e.format,e.costCentre?'CC '+e.costCentre:'',allSubs(e).length?allSubs(e).length+' sub-topic'+(allSubs(e).length>1?'s':''):''].filter(Boolean).join(' · '))}</div>
-          ${(e.principles||[]).length?`<div class="chips">${e.principles.map(p=>`<span class="chip">${esc(p)}</span>`).join('')}</div>`:''}
-        </div>
-        <span class="badge ${e.status||'open'}">${esc((STATUSES.find(s=>s[0]===(e.status||'open'))||[])[1])}</span>
-      </div>`).join('')}</div>`
-      : `<div class="empty">${es.length?'No topic matches that search.':'No topics logged for '+esc(d.name)+' yet. Tap “New topic” after a session.'}</div>`}
+    ${statBlock([['Machines',ms.length],['Topics',es.length],['Hours',fmtHours(sumMins(es))],['Follow-ups',fu,fu]])}
+    ${ms.length?`<div class="grid">${ms.map(m=>{
+        const me=machineEntries(m.id), last=me[0], mfu=me.filter(e=>e.status==='followup').length;
+        return `<div class="card" data-mid="${m.id}" tabindex="0">
+          <div class="row"><div class="avatar" style="font-size:16px">⚙</div>
+          <div style="min-width:0"><h3>${esc(m.name||'Unnamed machine')}</h3><div class="sub">${esc(machineLine(m)||'—')}</div></div></div>
+          ${m.projectDescription?`<div class="sub" style="margin-top:8px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${esc(m.projectDescription)}</div>`:''}
+          <div class="meta"><span><b>${me.length}</b> topics</span><span><b>${fmtHours(sumMins(me))}</b> h</span>
+          <span>last <b>${last?esc(fmtDate(last.date)):'—'}</b></span>${mfu?`<span style="color:var(--warn)"><b style="color:inherit">${mfu}</b> follow-up</span>`:''}</div>
+        </div>`;}).join('')}</div>`
+      : `<div class="empty">No machines for ${esc(d.name)} yet. Add the machine or facility they are working on, then log topics under it.</div>`}
     ${d.notes?`<div class="panel" style="margin-top:14px"><h3>Development goals</h3><p style="white-space:pre-wrap;margin:0">${esc(d.notes)}</p></div>`:''}
   `;
   $('#editD').onclick=()=>editDesigner(d);
-  $('#addE').onclick=()=>newEntry(d);
-  $('#printD').onclick=()=>printDesigner(d);
+  $('#addM').onclick=()=>editMachine(d);
+  $('#printD').onclick=()=>printReport(d);
+  $$('.card[data-mid]').forEach(c=>{ c.onclick=()=>go('#/m/'+c.dataset.mid); c.onkeydown=e=>e.key==='Enter'&&c.click(); });
+}
+
+async function editMachine(d, m){
+  const isNew=!m; m=m||{};
+  const known=[...new Map(machines.filter(x=>x.name).map(x=>[x.name,x])).values()];
+  const v=await modal({
+    title:isNew?'Add machine':'Edit machine',
+    body:`<div class="f"><label>Project number</label><input id="m_pn" value="${esc(m.projectNumber)}" placeholder="e.g. 24-118"></div>
+      <div class="f"><label>Facility / machine name *</label><input id="m_mn" value="${esc(m.name)}" list="machList" autocomplete="off" placeholder="e.g. Line 3 welding cell">
+        <datalist id="machList">${known.map(x=>`<option value="${esc(x.name)}">`).join('')}</datalist></div>
+      <div class="f"><label>Project description</label><textarea id="m_pd" placeholder="What the machine does, customer, scope…">${esc(m.projectDescription)}</textarea></div>
+      <div class="f"><label>Cost centre number</label><input id="m_cc" value="${esc(m.costCentre)}" placeholder="e.g. 4120"></div>
+      ${isNew&&known.length?'<div class="sub">Tip: pick a machine another designer already has and its details fill in.</div>':''}`,
+    onOpen:ov=>{ const n=$('#m_mn',ov); n.addEventListener('change',()=>{ const k=known.find(x=>x.name===n.value.trim()); if(!k) return;
+        [['#m_pn','projectNumber'],['#m_pd','projectDescription'],['#m_cc','costCentre']].forEach(([sel,f])=>{ const i=$(sel,ov); if(!i.value) i.value=k[f]||''; }); }); },
+    buttons:[...(isNew?[]:[{label:'Delete',value:'delete',cls:'danger'}]),{label:'Cancel',value:null},
+      {label:isNew?'Add machine':'Save', cls:'pri', validate:ov=>{ const ok=$('#m_mn',ov).value.trim(); if(!ok) $('#m_mn',ov).focus(); return !!ok; },
+       value:ov=>({projectNumber:$('#m_pn',ov).value.trim(), name:$('#m_mn',ov).value.trim(), projectDescription:$('#m_pd',ov).value.trim(), costCentre:$('#m_cc',ov).value.trim()})}]
+  });
+  if(!v) return;
+  if(v==='delete'){
+    const es=machineEntries(m.id);
+    if(!await confirmBox('Delete machine',`Delete ${m.name}${es.length?` and its ${es.length} topic entr${es.length>1?'ies':'y'} (including attachments)`:''}? This cannot be undone.`)) return;
+    for(const e of es) await deleteEntryData(e);
+    await DB.del('machines',m.id); machines=machines.filter(x=>x.id!==m.id); await markChanged();
+    toast('Machine deleted'); go('#/d/'+m.designerId); return;
+  }
+  Object.assign(m,v); if(isNew) m.designerId=d.id; stamp(m,isNew); await DB.put('machines',m); if(isNew) machines.push(m); await markChanged();
+  if(isNew) go('#/m/'+m.id); else render();
+}
+
+/* ---------------- view 3: topics within a machine ---------------- */
+function renderTopics(){
+  const m=byId(machines,view.machineId); if(!m) return go('#/');
+  const d=byId(designers,m.designerId);
+  const es=machineEntries(m.id), fu=es.filter(e=>e.status==='followup').length;
+  const deltas=es.filter(e=>e.skillBefore&&e.skillAfter).map(e=>e.skillAfter-e.skillBefore);
+  const avgDelta=deltas.length?(deltas.reduce((a,b)=>a+b,0)/deltas.length):null;
+  const q=(view.tq||'').toLowerCase();
+  const shown=es.filter(e=>!q || [e.topicTitle,e.topicCategory,e.topicNotes,(e.principles||[]).join(' '),e.skillArea,...allSubs(e).map(x=>x.title+' '+x.notes)].join(' ').toLowerCase().includes(q));
+  $('#main').innerHTML=`
+    <div class="bar">
+      <button class="btn sm" id="back">← ${esc(d?d.name:'Back')}</button>
+      <h2 style="flex:1 1 180px">${esc(m.name||'Unnamed machine')}<div class="sub">${esc(machineLine(m))}</div></h2>
+      <button class="btn sm" id="editM">Edit</button>
+      <button class="btn sm" id="printM" ${es.length?'':'disabled'}>Print / PDF</button>
+      <button class="btn pri" id="addE">+ New topic</button>
+    </div>
+    ${m.projectDescription?`<div class="panel"><h3>Project description</h3><p style="white-space:pre-wrap;margin:0">${esc(m.projectDescription)}</p></div>`:''}
+    ${statBlock([['Topics',es.length],['Hours',fmtHours(sumMins(es))],['Follow-ups',fu,fu],['Avg skill gain',avgDelta===null?'—':(avgDelta>0?'+':'')+avgDelta.toFixed(1)]])}
+    ${es.length>4?`<div class="bar"><input class="search" id="tq" placeholder="Search topics, sub-topics, principles…" value="${esc(view.tq||'')}"></div>`:''}
+    ${shown.length?`<div class="list">${shown.map(e=>{ const subs=allSubs(e).filter(x=>x.title);
+      return `<div class="item st-${e.status||'open'}" data-id="${e.id}" tabindex="0">
+        <div class="d"><b>${esc(fmtDate(e.date))}</b>${esc(fmtDur(e.durationMin))}</div>
+        <div style="min-width:0"><h4>${esc(e.topicTitle||'Untitled topic')}</h4>
+          <div class="sub">${esc([e.topicCategory,e.format].filter(Boolean).join(' · '))}</div>
+          ${subs.length?`<div class="subline">${subs.map(x=>`<span>↳ ${esc(x.title)}</span>`).join('')}</div>`:''}
+          ${(e.principles||[]).length?`<div class="chips">${e.principles.map(p=>`<span class="chip">${esc(p)}</span>`).join('')}</div>`:''}
+        </div>
+        <span class="badge ${e.status||'open'}">${esc((STATUSES.find(s=>s[0]===(e.status||'open'))||[])[1])}</span>
+      </div>`;}).join('')}</div>`
+      : `<div class="empty">${es.length?'No topic matches that search.':'No topics logged on this machine yet. Tap “New topic” after a session.'}</div>`}
+  `;
+  $('#back').onclick=()=>go('#/d/'+m.designerId);
+  $('#editM').onclick=()=>editMachine(d,m);
+  $('#addE').onclick=()=>newEntry(m);
+  $('#printM').onclick=()=>printReport(d,m.id);
   const tq=$('#tq'); if(tq) tq.oninput=()=>{ view.tq=tq.value; const p=tq.selectionStart; renderTopics(); const n=$('#tq'); n.focus(); n.setSelectionRange(p,p); };
   $$('.item[data-id]').forEach(c=>{ c.onclick=()=>go('#/e/'+c.dataset.id); c.onkeydown=e=>e.key==='Enter'&&c.click(); });
 }
 
-async function newEntry(d){
-  const prev=designerEntries(d.id)[0];
-  const e=stamp({designerId:d.id, consultant:settings.consultant||'', attendees:'', date:today(), time:'', durationMin:60, format:'In person',
+async function newEntry(m){
+  const e=stamp({designerId:m.designerId, machineId:m.id, consultant:settings.consultant||'', attendees:'', date:today(), time:'', durationMin:60, format:'In person',
     topicTitle:'', topicCategory:'', topicNotes:'', topicFiles:[], topicSubs:[], principles:[], principleNotes:'', principleFiles:[], principleSubs:[],
     skillArea:'', skillBefore:'', skillAfter:'', skillObs:'', skillActions:'', followUpDate:'',
-    facilityName: prev?prev.facilityName:'', facilityDesc:'', costCentre: prev?prev.costCentre:'',
     officeTraining:false, officeProcess:false, officeTemplate:false, officeNotes:'', officeStatus:'', status:'open'}, true);
   await DB.put('entries',e); entries.push(e); await markChanged();
   go('#/e/'+e.id);
@@ -474,19 +647,20 @@ function allPrinciples(){
 
 function renderEntry(){
   const e=byId(entries,view.entryId); if(!e) return go('#/');
-  const d=byId(designers,e.designerId);
+  const d=byId(designers,e.designerId), mc=byId(machines,e.machineId);
   const h=Math.floor((+e.durationMin||0)/60), m=(+e.durationMin||0)%60;
   const levels=SKILL_LEVELS.map((t,i)=>[i?String(i):'', t||'—']);
   $('#main').innerHTML=`
     <div class="bar">
-      <button class="btn sm" id="back">← ${esc(d?d.name:'Back')}</button>
-      <h2 style="flex:1 1 200px">${esc(e.topicTitle||'New topic')}</h2>
+      <button class="btn sm" id="back">← ${esc(mc?mc.name:'Back')}</button>
+      <h2 style="flex:1 1 200px"><span id="etitle">${esc(e.topicTitle||'New topic')}</span><div class="sub">${esc([d&&d.name, mc&&mc.name, machineLine(mc)].filter(Boolean).join(' · '))}</div></h2>
       ${sel('Status','status',e,STATUSES).replace('class="f"','class="f" style="min-width:170px"')}
     </div>
     ${sec('01','Who',`
       <div class="f"><label>Designer</label><input value="${esc(d?d.name:'')}" disabled></div>
+      ${sel('Machine / facility','machineId',e,designerMachines(e.designerId).map(x=>[x.id,x.name+(x.projectNumber?' ('+x.projectNumber+')':'')]))}
       ${fld('Consultant / facilitator','consultant',e,{ph:'Your name'})}
-      ${fld('Others present','attendees',e,{full:true,ph:'e.g. Supervisor, project engineer'})}`)}
+      ${fld('Others present','attendees',e,{ph:'e.g. Supervisor, project engineer'})}`)}
     ${sec('02','When / How long',`
       ${fld('Date','date',e,{type:'date'})}
       ${fld('Start time','time',e,{type:'time'})}
@@ -513,11 +687,7 @@ function renderEntry(){
       ${area('Observations','skillObs',e,'Strengths, gaps, how the designer handled the topic…')}
       ${area('Actions agreed for the designer','skillActions',e,'Homework, reading, next task to practise…')}
       ${fld('Follow-up date','followUpDate',e,{type:'date'})}`)}
-    ${sec('06','Facility description &amp; cost centre',`
-      ${fld('Facility / project / machine','facilityName',e,{ph:'e.g. Line 3 welding cell, Project 24-118'})}
-      ${fld('Cost centre','costCentre',e,{ph:'e.g. CC-4120'})}
-      ${area('Facility description','facilityDesc',e,'Where the session took place or the facility the topic relates to…')}`)}
-    ${sec('07','Office application / standardization',`
+    ${sec('06','Office application / standardization',`
       <div class="f full"><span class="lbl">Can this become part of…</span><div class="checks">
         <label><input type="checkbox" data-f="officeTraining" ${e.officeTraining?'checked':''}> General training for the design department</label>
         <label><input type="checkbox" data-f="officeProcess" ${e.officeProcess?'checked':''}> A design process / company standard</label>
@@ -536,7 +706,8 @@ function renderEntry(){
     const ev = inp.tagName==='SELECT'||inp.type==='checkbox'||inp.type==='date'||inp.type==='time' ? 'change' : 'input';
     inp.addEventListener(ev, ()=>{
       const k=inp.dataset.f; e[k]= inp.type==='checkbox' ? inp.checked : inp.value;
-      if(k==='topicTitle'){ $('h2',$('#main')).textContent=inp.value||'New topic'; renderTabs(); }
+      if(k==='topicTitle'){ $('#etitle').textContent=inp.value||'New topic'; renderTabs(); }
+      if(k==='machineId'){ view.machineId=inp.value; const nm=byId(machines,inp.value); $('#back').textContent='← '+(nm?nm.name:'Back'); renderTabs(); }
       queueSave(e);
     });
   });
@@ -576,10 +747,10 @@ function renderEntry(){
   });
   $$('[data-up]').forEach(inp=>inp.onchange=async()=>{ const files=[...inp.files]; inp.value=''; await addFiles(e,inp.dataset.up,files); });
   $$('[data-mic]').forEach(b=>b.onclick=()=>toggleDictation(b));
-  $('#back').onclick=()=>go('#/d/'+e.designerId);
-  $('#doneE').onclick=async()=>{ await flushSave(); toast('Entry saved'); go('#/d/'+e.designerId); };
+  $('#back').onclick=()=>go('#/m/'+e.machineId);
+  $('#doneE').onclick=async()=>{ await flushSave(); toast('Entry saved'); go('#/m/'+e.machineId); };
   $('#delE').onclick=async()=>{ if(!await confirmBox('Delete entry','Delete this logbook entry and its attachments? This cannot be undone.')) return;
-    pendingEntry=null; await deleteEntryData(e); await markChanged(); toast('Entry deleted'); go('#/d/'+e.designerId); };
+    pendingEntry=null; await deleteEntryData(e); await markChanged(); toast('Entry deleted'); go('#/m/'+e.machineId); };
 }
 
 async function deleteEntryData(e){
@@ -660,6 +831,36 @@ async function toggleDictation(btn){
 }
 window.addEventListener('hashchange', stopDictation);
 
+/* ---------------- media folder (File System Access API: Chrome / Edge on a computer) ----------------
+   Uploads always stay in the app. If a media folder is connected, a copy is also written there as
+   Customer / Designer / Machine / date topic / file, and the record keeps that path. A backup made
+   without media can then be loaded on another computer and the files are read back from the folder. */
+const FS_OK = typeof window.showDirectoryPicker==='function';
+let mediaDir=null, mediaPerm='none';
+async function loadMediaDir(){ if(!FS_OK) return; try{ if(!mediaDir) mediaDir=await DB.getMeta('mediaDir',null); mediaPerm= mediaDir ? await mediaDir.queryPermission({mode:'readwrite'}) : 'none'; }catch{ mediaDir=null; mediaPerm='none'; } }
+async function ensureMediaPerm(ask){ if(!mediaDir) return false; try{ let p=await mediaDir.queryPermission({mode:'readwrite'}); if(p!=='granted'&&ask) p=await mediaDir.requestPermission({mode:'readwrite'}); mediaPerm=p; return p==='granted'; }catch{ return false; } }
+const mediaReady = () => !!mediaDir && mediaPerm==='granted';
+const cleanName = s => (s||'').replace(/[\\/:*?"<>|\x00-\x1f]+/g,' ').replace(/\s+/g,' ').trim().slice(0,60).replace(/[. ]+$/,'') || 'untitled';
+function mediaPathFor(e,rec){
+  const d=byId(designers,e.designerId), m=byId(machines,e.machineId), c=d&&byId(customers,d.customerId);
+  const ext=(rec.name.match(/\.[^.]+$/)||[''])[0], base=rec.name.slice(0,rec.name.length-ext.length);
+  return [cleanName(c&&c.name), cleanName(d&&d.name), cleanName(m&&m.name), cleanName(((e.date||'')+' '+(e.topicTitle||'topic')).trim()), cleanName(base)+'_'+rec.id.slice(0,6)+ext].join('/');
+}
+async function folderWrite(path,blob){ const parts=path.split('/'); let dir=mediaDir; for(const p of parts.slice(0,-1)) dir=await dir.getDirectoryHandle(p,{create:true});
+  const fh=await dir.getFileHandle(parts[parts.length-1],{create:true}); const w=await fh.createWritable(); await w.write(blob); await w.close(); }
+async function folderRead(path){ const parts=path.split('/'); let dir=mediaDir; for(const p of parts.slice(0,-1)) dir=await dir.getDirectoryHandle(p);
+  return (await dir.getFileHandle(parts[parts.length-1])).getFile(); }
+async function copyToFolder(rec){
+  if(!mediaReady() || !rec.data) return false;
+  const e=byId(entries,rec.entryId); if(!e) return false;
+  rec.path=rec.path||mediaPathFor(e,rec);
+  await folderWrite(rec.path, dataURLtoBlob(rec.data)); rec.inFolder=true; await DB.put('files',rec); return true;
+}
+async function fillFromFolder(rec){
+  if(rec.data || !rec.path || !mediaReady()) return false;
+  try{ const f=await folderRead(rec.path); rec.data=await readDataURL(f); rec.inFolder=true; await DB.put('files',rec); return true; }catch{ return false; }
+}
+
 /* ---------------- attachments ---------------- */
 const readDataURL = f => new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=()=>rej(r.error); r.readAsDataURL(f); });
 async function shrinkImage(file){
@@ -684,19 +885,20 @@ async function addFiles(e,key,files){
     const rec=stamp({entryId:e.id, section:key, name:s.name, type:s.type||'application/octet-stream', size:Math.round(s.data.length*0.75), data:s.data}, true);
     try{ await DB.put('files',rec); }catch(err){ toast('Could not store '+f.name+': '+err.message); continue; }
     fileCache.set(rec.id,rec);
+    if(mediaReady()){ try{ await copyToFolder(rec); }catch(err){ toast('Saved in the app, but not to the media folder: '+err.message); } }
     const h=holderFor(e,key); if(h) h.obj[h.prop]=[...(h.obj[h.prop]||[]),rec.id];
   }
   queueSave(e); await flushSave(); drawAtt(e,key);
 }
-async function getFile(id){ if(!fileCache.has(id)){ const r=await DB.get('files',id); if(r) fileCache.set(id,r); } return fileCache.get(id); }
+async function getFile(id){ if(!fileCache.has(id)){ const r=await DB.get('files',id); if(r) fileCache.set(id,r); } const r=fileCache.get(id); if(r && !r.data) await fillFromFolder(r); return r; }
 async function drawAtt(e,key){
   const box=document.getElementById(boxId(key)), h=holderFor(e,key); if(!box||!h) return;
   const ids=h.obj[h.prop]||[];
   if(!ids.length){ box.innerHTML=`<span class="sub">No attachments yet.</span>`; return; }
   const recs=(await Promise.all(ids.map(getFile))).filter(Boolean);
   box.innerHTML=recs.map(r=>{
-    const isImg=r.type.startsWith('image/'); const ext=(r.name.split('.').pop()||'file').slice(0,4).toUpperCase();
-    return `<div class="thumb" data-id="${r.id}" title="${esc(r.name)}"><div class="img" ${isImg?`style="background-image:url('${r.data}')"`:''}>${isImg?'':esc(ext)}</div>
+    const isImg=r.type.startsWith('image/')&&r.data; const ext=r.data?(r.name.split('.').pop()||'file').slice(0,4).toUpperCase():'MISSING';
+    return `<div class="thumb${r.data?'':' missing'}" data-id="${r.id}" title="${esc(r.name)}${r.data?'':' (not on this device. Connect the media folder in Settings)'}"><div class="img" ${isImg?`style="background-image:url('${r.data}')"`:''}>${isImg?'':esc(ext)}</div>
       <div class="nm">${esc(r.name)}</div><button class="x" data-x="${r.id}" aria-label="Remove">×</button></div>`;}).join('');
   $$('.thumb',box).forEach(t=>t.onclick=ev=>{ if(ev.target.dataset.x) return; openFile(t.dataset.id); });
   $$('[data-x]',box).forEach(b=>b.onclick=async()=>{
@@ -710,6 +912,7 @@ function dataURLtoBlob(u){ const [h,b]=u.split(','); const mime=(h.match(/data:(
 function downloadBlob(blob,name){ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1500); }
 async function openFile(id){
   const r=await getFile(id); if(!r) return;
+  if(!r.data){ toast(mediaDir?'This file is not in the media folder any more.':'This file is not on this device. Connect the media folder under Settings.'); return; }
   if(r.type.startsWith('image/')){
     const lb=document.createElement('div'); lb.className='lightbox';
     lb.innerHTML=`<img src="${r.data}" alt="${esc(r.name)}"><div class="lb-bar"><button class="btn sm" id="lbDl">Download</button><button class="btn sm pri" id="lbX">Close</button></div>`;
@@ -724,28 +927,75 @@ async function openFile(id){
 }
 
 /* ---------------- print report ---------------- */
-async function printDesigner(d){
+async function printReport(d, onlyMachineId){
   await flushSave();
-  const es=designerEntries(d.id).slice().reverse();
-  const imgs=async ids=>(await Promise.all((ids||[]).map(getFile))).filter(r=>r&&r.type.startsWith('image/')).map(r=>`<img src="${r.data}">`).join('');
+  const ms=designerMachines(d.id).filter(m=>!onlyMachineId||m.id===onlyMachineId);
+  const es=ms.flatMap(m=>machineEntries(m.id));
+  const imgs=async ids=>(await Promise.all((ids||[]).map(getFile))).filter(r=>r&&r.data&&r.type.startsWith('image/')).map(r=>`<img src="${r.data}">`).join('');
   const files=async ids=>(await Promise.all((ids||[]).map(getFile))).filter(r=>r&&!r.type.startsWith('image/')).map(r=>esc(r.name)).join(', ');
   const P=(k,v)=>v?`<div class="pk">${k}</div><p>${esc(v)}</p>`:'';
   const subsP=async(list,no)=>{ let o=''; for(const [i,x] of (list||[]).entries()){ const fl=await files(x.files);
       o+=`<div style="margin-left:12pt"><div class="pk">${no}.${i+1} ${esc(x.title||'Sub-topic')}</div>${x.notes?`<p>${esc(x.notes)}</p>`:''}${x.link?`<p>Link: ${esc(x.link)}</p>`:''}${await imgs(x.files)}${fl?`<p>Files: ${fl}</p>`:''}</div>`; } return o; };
-  let html=`<h1>Designer logbook · ${esc(d.name)}</h1><div>${esc([d.role,d.discipline].filter(Boolean).join(' · '))} — printed ${esc(fmtDate(today()))} · ${es.length} topics · ${fmtHours(es.reduce((s,e)=>s+(+e.durationMin||0),0))} h</div>`;
-  for(const e of es){
+  const cu=byId(customers,d.customerId);
+  let html=`<h1>${cu?esc(cu.name)+' · ':''}Designer logbook · ${esc(d.name)}${onlyMachineId&&ms[0]?' · '+esc(ms[0].name):''}</h1><div>${esc([d.role,d.discipline].filter(Boolean).join(' · '))} — printed ${esc(fmtDate(today()))} · ${es.length} topics · ${fmtHours(es.reduce((s,e)=>s+(+e.durationMin||0),0))} h</div>`;
+  for(const m of ms){
+   const mes=machineEntries(m.id).slice().reverse(); if(!mes.length) continue;
+   html+=`<div class="pm"><h2>⚙ ${esc(m.name)}</h2><div>${esc([m.projectNumber&&'Project number: '+m.projectNumber, m.costCentre&&'Cost centre: '+m.costCentre].filter(Boolean).join(' · '))}</div>${m.projectDescription?`<p>${esc(m.projectDescription)}</p>`:''}</div>`;
+   for(const e of mes){
     const office=[e.officeTraining&&'General training',e.officeProcess&&'Process / standard',e.officeTemplate&&'Template / checklist'].filter(Boolean).join(', ');
     html+=`<div class="pe"><h2>${esc(fmtDate(e.date))} — ${esc(e.topicTitle||'Untitled topic')}</h2>
       <div>${esc([e.time,fmtDur(e.durationMin),e.format,e.consultant&&'with '+e.consultant,e.attendees].filter(Boolean).join(' · '))} · Status: ${esc((STATUSES.find(s=>s[0]===e.status)||['','Open'])[1])}</div>
       ${P('Topic of discussion',[e.topicCategory,e.topicNotes].filter(Boolean).join('\n'))}${await imgs(e.topicFiles)}${(await files(e.topicFiles))?`<p>Files: ${await files(e.topicFiles)}</p>`:''}${await subsP(e.topicSubs,'03')}
       ${P('Key design principles',[(e.principles||[]).join(', '),e.principleNotes].filter(Boolean).join('\n'))}${await imgs(e.principleFiles)}${(await files(e.principleFiles))?`<p>Files: ${await files(e.principleFiles)}</p>`:''}${await subsP(e.principleSubs,'04')}
       ${P('Skill development',[e.skillArea,(e.skillBefore||e.skillAfter)?`Level ${e.skillBefore||'?'} → ${e.skillAfter||'?'}`:'',e.skillObs,e.skillActions&&'Actions: '+e.skillActions,e.followUpDate&&'Follow up: '+fmtDate(e.followUpDate)].filter(Boolean).join('\n'))}
-      ${P('Facility & cost centre',[e.facilityName,e.costCentre&&'Cost centre: '+e.costCentre,e.facilityDesc].filter(Boolean).join('\n'))}
       ${P('Office application / standardization',[office,e.officeNotes,e.officeStatus&&'Status: '+e.officeStatus].filter(Boolean).join('\n'))}
     </div>`;
+   }
   }
   $('#print').innerHTML=html;
   setTimeout(()=>window.print(),300);
+}
+
+/* ---------------- settings view ---------------- */
+async function renderSettings(){
+  await loadMediaDir();
+  const nAll=(await DB.all('files')), nMissing=nAll.filter(r=>!r.data).length, nNotCopied=nAll.filter(r=>r.data&&!r.inFolder).length;
+  let status;
+  if(!FS_OK) status=`<div class="banner" style="margin:0 0 12px"><span>This browser cannot save to a folder. That works in <b>Chrome or Edge on a computer</b>. On phones, media stays inside the app and goes into the backup file.</span></div>`;
+  else if(!mediaDir) status=`<div class="kv" style="margin-bottom:12px">No media folder connected. Media is kept inside the app only.</div>`;
+  else if(mediaPerm!=='granted') status=`<div class="banner" style="margin:0 0 12px"><span>Media folder <b>${esc(mediaDir.name)}</b> needs permission again (the browser asks once per visit).</span><button class="btn sm dark" id="mReconnect">Reconnect</button></div>`;
+  else status=`<div class="kv" style="margin-bottom:12px;color:var(--ok)">✓ Connected to folder <b>${esc(mediaDir.name)}</b>. New images and files are copied there automatically.</div>`;
+  $('#main').innerHTML=`
+    <div class="bar"><h2>Settings</h2></div>
+    <div class="panel"><h3>Media folder</h3>
+      <p>Pick a folder where uploaded images, drawings and data sheets are also saved as normal files, sorted by customer, designer and machine. For cloud storage, choose a folder inside <b>OneDrive</b>, <b>Google Drive for desktop</b> or a mapped <b>network drive</b>; their sync app uploads it for you. When a backup is loaded without media, the app reads the files back from this folder if they are still there.</p>
+      ${status}
+      ${FS_OK?`<div class="att-actions">
+        <button class="btn pri" id="mPick">${mediaDir?'Change folder…':'Choose media folder…'}</button>
+        ${mediaDir&&mediaPerm==='granted'?`<button class="btn" id="mCopy" ${nNotCopied?'':'disabled'}>Copy ${nNotCopied} existing file${nNotCopied===1?'':'s'} to folder</button>
+        <button class="btn" id="mFill" ${nMissing?'':'disabled'}>Reload ${nMissing} missing file${nMissing===1?'':'s'} from folder</button>`:''}
+        ${mediaDir?`<button class="btn danger" id="mOff">Disconnect</button>`:''}
+      </div>`:''}
+      ${nMissing&&!mediaReady()?`<p style="margin:12px 0 0;color:var(--warn)">${nMissing} attachment${nMissing===1?' is':'s are'} not on this device. Connect the media folder they were saved to and tap “Reload missing files”.</p>`:''}
+    </div>
+    <div class="panel"><h3>General</h3>
+      <div class="f" style="max-width:360px;margin-bottom:12px"><label for="sCons">Consultant name (pre-filled in “Who”)</label><input id="sCons" value="${esc(settings.consultant)}"></div>
+      <div class="f" style="max-width:360px"><label for="sSpeech">Voice typing language</label><select id="sSpeech">${[['en-ZA','English (South Africa)'],['en-GB','English (UK)'],['en-US','English (US)'],['af-ZA','Afrikaans'],['zu-ZA','isiZulu'],['xh-ZA','isiXhosa']].map(([v,t])=>`<option value="${v}" ${(settings.speechLang||'en-ZA')===v?'selected':''}>${t}</option>`).join('')}</select></div>
+    </div>
+  `;
+  $('#sSpeech').onchange=async ev=>{ settings.speechLang=ev.target.value; await DB.setMeta('settings',settings); toast('Saved'); };
+  $('#sCons').onchange=async ev=>{ settings.consultant=ev.target.value.trim(); await DB.setMeta('settings',settings); toast('Saved'); };
+  const on=(id,fn)=>{ const b=$('#'+id); if(b) b.onclick=fn; };
+  on('mPick', async()=>{ try{ const h=await window.showDirectoryPicker({id:'logbook-media', mode:'readwrite'}); mediaDir=h; mediaPerm='granted'; await DB.setMeta('mediaDir',h); toast('Media folder connected'); }
+    catch(err){ if(err.name!=='AbortError') toast('Could not use that folder: '+err.message); } renderSettings(); });
+  on('mReconnect', async()=>{ await ensureMediaPerm(true); renderSettings(); });
+  on('mOff', async()=>{ await DB.setMeta('mediaDir',null); mediaDir=null; mediaPerm='none'; toast('Media folder disconnected'); renderSettings(); });
+  on('mCopy', async()=>{ let n=0, bad=0; setSaveInd('● copying…',true);
+    for(const r of await DB.all('files')){ if(r.data && !r.inFolder){ try{ if(await copyToFolder(r)) n++; }catch{ bad++; } } }
+    fileCache.clear(); setSaveInd('✓ saved'); toast(`Copied ${n} file${n===1?'':'s'}${bad?`, ${bad} failed`:''}`); renderSettings(); });
+  on('mFill', async()=>{ let n=0, miss=0;
+    for(const r of await DB.all('files')){ if(!r.data){ if(await fillFromFolder(r)) n++; else miss++; } }
+    fileCache.clear(); toast(`Reloaded ${n} file${n===1?'':'s'}${miss?`, ${miss} not found in the folder`:''}`); renderSettings(); });
 }
 
 /* ---------------- backup view ---------------- */
@@ -758,45 +1008,45 @@ async function renderBackup(){
     <div class="bar"><h2>Save, load &amp; backup</h2></div>
     <div class="panel"><h3>How saving works</h3>
       <p>Everything saves automatically as you type, in this browser on this device. Clearing browser data or switching device will not carry it over, so export a backup file regularly and keep it on the network drive or OneDrive.</p>
-      <div class="kv">${designers.length} designers · ${entries.length} entries · ${nFiles} attachments<br>${esc(est)}${persisted===false?'<br>Browser may clear storage when space runs low. <a href="#" id="persist">Ask to keep it</a>':''}${persisted?'<br>Storage is marked as persistent.':''}<br>Last backup: ${last?esc(new Date(last).toLocaleString()):'never'}</div>
+      <div class="kv">${customers.length} customers · ${designers.length} designers · ${machines.length} machines · ${entries.length} entries · ${nFiles} attachments<br>${esc(est)}${persisted===false?'<br>Browser may clear storage when space runs low. <a href="#" id="persist">Ask to keep it</a>':''}${persisted?'<br>Storage is marked as persistent.':''}<br>Last backup: ${last?esc(new Date(last).toLocaleString()):'never'}</div>
     </div>
     <div class="panel"><h3>Export backup</h3>
-      <p>One .json file with all designers, entries, images and files. Use it to restore, move to another device or phone, or hand over.</p>
+      <p>One .json file with all customers, designers, machines, entries, images and files. Use it to restore, move to another device or phone, or hand over.</p>
+      <label class="checks" style="margin:-4px 0 12px;display:flex;gap:10px;align-items:flex-start;font-size:14px"><input type="checkbox" id="bkMedia" ${settings.backupMedia===false?'':'checked'} style="width:18px;height:18px;accent-color:var(--head)">
+        <span>Include images &amp; files in the backup.<br><span class="sub">Untick for a small backup when media is in the media folder. Files not copied to the folder yet are always included.</span></span></label>
       <button class="btn pri" id="exp">⬇ Export backup (.json)</button> <button class="btn" id="csv">⬇ Export entries to Excel (.csv)</button>
     </div>
     <div class="panel"><h3>Load backup</h3>
       <p>Open a backup file. You can merge it with what is here (newer edits win) or replace everything.</p>
       <label class="btn dark">⬆ Load backup file…<input type="file" id="imp" accept=".json,application/json"></label>
     </div>
-    <div class="panel"><h3>Settings</h3>
-      <div class="f" style="max-width:360px;margin-bottom:12px"><label for="sSpeech">Voice typing language</label><select id="sSpeech">${[['en-ZA','English (South Africa)'],['en-GB','English (UK)'],['en-US','English (US)'],['af-ZA','Afrikaans'],['zu-ZA','isiZulu'],['xh-ZA','isiXhosa']].map(([v,t])=>`<option value="${v}" ${(settings.speechLang||'en-ZA')===v?'selected':''}>${t}</option>`).join('')}</select></div>
-      <div class="f" style="max-width:360px"><label for="sCons">Consultant name (pre-filled in “Who”)</label><input id="sCons" value="${esc(settings.consultant)}"></div>
-    </div>
     <div class="panel"><h3>Danger zone</h3><p>Remove all data from this browser. Export a backup first.</p><button class="btn danger" id="wipe">Erase all data</button></div>
   `;
-  $('#sSpeech').onchange=async ev=>{ settings.speechLang=ev.target.value; await DB.setMeta('settings',settings); toast('Saved'); };
-  $('#sCons').onchange=async ev=>{ settings.consultant=ev.target.value.trim(); await DB.setMeta('settings',settings); toast('Saved'); };
+  $('#bkMedia').onchange=async ev=>{ settings.backupMedia=ev.target.checked; await DB.setMeta('settings',settings); };
   $('#exp').onclick=exportJSON; $('#csv').onclick=exportCSV;
   $('#imp').onchange=async ev=>{ const f=ev.target.files[0]; ev.target.value=''; if(f) await importJSON(f); };
   const ps=$('#persist'); if(ps) ps.onclick=async ev=>{ ev.preventDefault(); const ok=await navigator.storage.persist(); toast(ok?'Storage will be kept':'Browser declined, keep exporting backups'); renderBackup(); };
-  $('#wipe').onclick=async()=>{ if(!await confirmBox('Erase all data','This deletes every designer, entry and attachment from this browser. Continue?','Erase everything')) return;
-    for(const s of ['designers','entries','files']) await DB.clear(s); designers=[]; entries=[]; fileCache.clear(); await DB.setMeta('lastChange',null); toast('All data erased'); go('#/'); };
+  $('#wipe').onclick=async()=>{ if(!await confirmBox('Erase all data','This deletes every customer, designer, entry and attachment from this browser. Files in the media folder are not touched. Continue?','Erase everything')) return;
+    for(const s of ['customers','designers','machines','entries','files']) await DB.clear(s); customers=[]; designers=[]; machines=[]; entries=[]; fileCache.clear(); await DB.setMeta('lastChange',null); toast('All data erased'); go('#/'); };
 }
 
 async function exportJSON(){
   await flushSave();
-  const files=await DB.all('files');
-  const data={app:APP_ID, schemaVersion:SCHEMA, exportedAt:now(), exportedBy:settings.consultant||'', settings, designers, entries, files};
+  const withMedia=settings.backupMedia!==false;
+  const files=(await DB.all('files')).map(r=> (!withMedia && r.inFolder && r.path) ? {...r, data:null} : r);
+  const {backupMedia, ...rest}=settings;
+  const data={app:APP_ID, schemaVersion:SCHEMA, exportedAt:now(), exportedBy:settings.consultant||'', mediaIncluded:withMedia, settings:rest, customers, designers, machines, entries, files};
   const stampName=new Date().toISOString().slice(0,16).replace(/[-:T]/g,'').replace(/^(\d{8})/,'$1-');
   downloadBlob(new Blob([JSON.stringify(data)],{type:'application/json'}), `designer-logbook-backup-${stampName}.json`);
   await DB.setMeta('lastBackup', now()); toast('Backup exported'); if(view.name==='backup') renderBackup();
 }
 
 function exportCSV(){
-  const cols=[['Designer',e=>(byId(designers,e.designerId)||{}).name],['Date','date'],['Start','time'],['Duration (min)','durationMin'],['Format','format'],
+  const M=(e,f)=>(byId(machines,e.machineId)||{})[f];
+  const cols=[['Customer',e=>(byId(customers,(byId(designers,e.designerId)||{}).customerId)||{}).name],['Designer',e=>(byId(designers,e.designerId)||{}).name],['Project number',e=>M(e,'projectNumber')],['Machine / facility',e=>M(e,'name')],['Project description',e=>M(e,'projectDescription')],['Cost centre',e=>M(e,'costCentre')],['Date','date'],['Start','time'],['Duration (min)','durationMin'],['Format','format'],
     ['Consultant','consultant'],['Others present','attendees'],['Topic','topicTitle'],['Category','topicCategory'],['Discussion','topicNotes'],
     ['Principles',e=>(e.principles||[]).join('; ')],['Principles applied','principleNotes'],['Skill area','skillArea'],['Level before','skillBefore'],['Level after','skillAfter'],
-    ['Observations','skillObs'],['Actions','skillActions'],['Follow-up','followUpDate'],['Facility','facilityName'],['Cost centre','costCentre'],['Facility description','facilityDesc'],
+    ['Observations','skillObs'],['Actions','skillActions'],['Follow-up','followUpDate'],
     ['To training',e=>e.officeTraining?'Yes':''],['To process/standard',e=>e.officeProcess?'Yes':''],['To template',e=>e.officeTemplate?'Yes':''],
     ['Standardization notes','officeNotes'],['Standardization status','officeStatus'],['Status','status'],['Sub-topics',e=>allSubs(e).map(x=>x.title+(x.notes?': '+x.notes:'')+(x.link?' ('+x.link+')':'')).join(' | ')],['Attachments',e=>allFileIds(e).length]];
   const q=v=>{ v=String(v??''); return /[",\n\r;]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
@@ -808,19 +1058,26 @@ async function importJSON(f){
   let data; try{ data=JSON.parse(await f.text()); }catch{ return modal({title:'Not a backup file', body:'That file could not be read as a logbook backup.'}); }
   if(data.app!==APP_ID || !Array.isArray(data.designers) || !Array.isArray(data.entries)) return modal({title:'Not a backup file', body:'That file is not a Designer Logbook backup.'});
   if((data.schemaVersion||1)>SCHEMA) return modal({title:'Newer backup', body:'This backup was made by a newer version of the app. Please use the newer version.'});
-  const mode=await modal({title:'Load backup', body:`<div>Backup from <b>${esc(new Date(data.exportedAt).toLocaleString())}</b>: ${data.designers.length} designers, ${data.entries.length} entries, ${(data.files||[]).length} attachments.</div>
+  const mode=await modal({title:'Load backup', body:`<div>Backup from <b>${esc(new Date(data.exportedAt).toLocaleString())}</b>: ${(data.customers||[]).length} customers, ${data.designers.length} designers, ${(data.machines||[]).length} machines, ${data.entries.length} entries, ${(data.files||[]).length} attachments.</div>
     <div class="sub">Merge keeps what is here and adds or updates from the file (the newer edit wins). Replace wipes this browser first.</div>`,
     buttons:[{label:'Cancel',value:null},{label:'Replace all',value:'replace',cls:'danger'},{label:'Merge',value:'merge',cls:'pri'}]});
   if(!mode) return;
   await flushSave();
-  if(mode==='replace'){ for(const s of ['designers','entries','files']) await DB.clear(s); designers=[]; entries=[]; fileCache.clear(); }
+  if(mode==='replace'){ for(const s of ['customers','designers','machines','entries','files']) await DB.clear(s); customers=[]; designers=[]; machines=[]; entries=[]; fileCache.clear(); }
   const merge=async(store,arr,local)=>{ let n=0; for(const r of arr||[]){ if(!r||!r.id) continue; const cur=local?byId(local,r.id):await DB.get(store,r.id);
-      if(!cur || (r.updatedAt||'')>=(cur.updatedAt||'')){ await DB.put(store,r); n++; } } return n; };
-  const nd=await merge('designers',data.designers,designers), ne=await merge('entries',data.entries,entries), nf=await merge('files',data.files);
+      if(!cur || (r.updatedAt||'')>=(cur.updatedAt||'')){ const v = (store==='files' && !r.data && cur && cur.data) ? {...r, data:cur.data} : r; await DB.put(store,v); n++; } } return n; };
+  const nc=await merge('customers',data.customers||[],customers);
+  const nd=await merge('designers',data.designers,designers), nm=await merge('machines',data.machines||[],machines), ne=await merge('entries',data.entries,entries), nf=await merge('files',data.files);
   if(mode==='replace' && data.settings){ settings={...settings,...data.settings}; await DB.setMeta('settings',settings); }
-  designers=await DB.all('designers'); entries=await DB.all('entries'); fileCache.clear();
+  customers=await DB.all('customers'); designers=await DB.all('designers'); machines=await DB.all('machines'); entries=await DB.all('entries'); fileCache.clear();
+  await migrateToCustomers(); await migrateToMachines();
+  let filled=0, missing=0; await loadMediaDir(); if(mediaDir) await ensureMediaPerm(false);
+  for(const r of await DB.all('files')){ if(!r.data){ if(await fillFromFolder(r)) filled++; else missing++; } }
+  fileCache.clear();
   await markChanged(); if(mode==='replace') await DB.setMeta('lastBackup', now());
-  toast(`Loaded ${nd} designers, ${ne} entries, ${nf} files`); go('#/');
+  toast(`Loaded ${nc} customers, ${nd} designers, ${nm} machines, ${ne} entries, ${nf} files`+(filled?`, ${filled} reloaded from the media folder`:''));
+  go('#/');
+  if(missing) modal({title:'Some media is not on this device', body:`<div>${missing} image${missing===1?'':'s'} or file${missing===1?'':'s'} in this backup were not included. Connect the media folder under <b>Settings</b> (Chrome or Edge on a computer) and tap “Reload missing files”. Until then they show as MISSING.</div>`});
 }
 
 /* ---------------- theme (auto / light / dark) ---------------- */
@@ -842,13 +1099,16 @@ applyTheme();
 (async function start(){
   try{ await DB.open(); }
   catch(err){ $('#main').innerHTML=`<div class="empty">This browser blocked local storage (${esc(err.message)}). Open the file in Chrome, Edge or Safari, outside private mode.</div>`; return; }
-  designers=await DB.all('designers'); entries=await DB.all('entries');
+  customers=await DB.all('customers'); designers=await DB.all('designers'); machines=await DB.all('machines'); entries=await DB.all('entries');
+  await loadMediaDir();
   settings={...settings, ...(await DB.getMeta('settings',{}))};
   if(!settings.consultant && !designers.length){
-    const n=await modal({title:'Welcome to the Designer Logbook', body:`<div class="sub">This name is pre-filled as the consultant on each entry. You can change it later under Save / Backup.</div><div class="f"><label>Your name</label><input id="m_c" autocomplete="name"></div>`,
+    const n=await modal({title:'Welcome to the Designer Logbook', body:`<div class="sub">This name is pre-filled as the consultant on each entry. You can change it later under Settings.</div><div class="f"><label>Your name</label><input id="m_c" autocomplete="name"></div>`,
       buttons:[{label:'Skip',value:''},{label:'Continue',cls:'pri',value:ov=>$('#m_c',ov).value.trim()}]});
     settings.consultant=n||''; await DB.setMeta('settings',settings);
   }
+  const mc=await migrateToCustomers(), mm=await migrateToMachines();
+  if(mc) toast('Designers placed under “My first customer”. Open it to rename.'); else if(mm) toast('Entries grouped into machines');
   route();
 })();
 </script>
